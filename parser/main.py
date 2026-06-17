@@ -14,6 +14,7 @@
 
 import re
 import asyncio
+from urllib.parse import unquote
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -42,13 +43,25 @@ class ParseResult(BaseModel):
 
 def extract_org_id(url: str) -> str | None:
     """
-    Пытается извлечь ID организации из полного URL вида
-    https://yandex.ru/maps/org/mcdonalds/12345678/...
-    Для короткой ссылки (/maps/-/CODE) вернёт None — ID определим
-    уже после перехода по редиректу, из итогового адреса страницы.
+    Достаёт ID организации из URL Яндекс.Карт. Поддерживает разные форматы ссылок:
+      • карточка:        /maps/org/название/12345678
+      • поисковая выдача: ...poi[uri]=ymapsbm1://org?oid=12345678  (ссылка «Поделиться»)
+      • просто параметр:  ...&oid=12345678
+    Возвращает None, если ID не найден (напр. ещё не отработал редирект короткой ссылки).
     """
-    match = re.search(r'/org/[^/]+/(\d+)', url)
-    return match.group(1) if match else None
+    # url может быть URL-кодированным (oid%3D...), раскодируем для поиска oid
+    decoded = unquote(url)
+    patterns = [
+        r'/org/[^/]+/(\d+)',     # /maps/org/name/12345
+        r'/org/(\d+)',           # /maps/org/12345 (без slug)
+        r'[?&]oid=(\d+)',        # &oid=12345
+        r'org\?oid=(\d+)',       # ymapsbm1://org?oid=12345
+    ]
+    for pat in patterns:
+        m = re.search(pat, decoded)
+        if m:
+            return m.group(1)
+    return None
 
 
 @app.post("/parse", response_model=ParseResult)
@@ -112,20 +125,21 @@ async def scrape_yandex_maps(url: str) -> ParseResult:
                 "сервера-дата-центра. Нужен резидентный прокси или запуск парсера с другого IP."
             )
 
-        # Шаг 2. Из итогового адреса достаём ID и идём на вкладку отзывов
-        org_id = extract_org_id(final_url)
+        # Шаг 2. Достаём ID организации — из итогового адреса ИЛИ из исходной ссылки
+        # (ID может быть в параметре oid у ссылок «Поделиться» из поиска).
+        org_id = extract_org_id(final_url) or extract_org_id(url)
         if not org_id:
-            # Не нашли /org/.../id — значит это не карточка организации
             page_title = await page.title()
             raise ValueError(
                 f"Не удалось определить организацию по ссылке. Итоговый адрес: {final_url}. "
                 f"Заголовок страницы: «{page_title}». Возможно, капча или неверная ссылка."
             )
 
-        # Базовый адрес карточки + вкладка отзывов
-        base = re.match(r'(https?://[^/]+/maps/org/[^/]+/\d+)', final_url)
-        reviews_url = (base.group(1) if base else final_url.rstrip('/')) + '/reviews/'
+        # Строим канонический адрес карточки по ID и идём на вкладку отзывов.
+        # Яндекс сам подставит slug — /maps/org/<id>/reviews/ работает без названия.
+        reviews_url = f'https://yandex.ru/maps/org/{org_id}/reviews/'
         await page.goto(reviews_url, wait_until='domcontentloaded', timeout=30000)
+        await asyncio.sleep(2)
 
         # Ждём появления хотя бы одного блока отзыва. Пробуем несколько селекторов:
         # классы Яндекса меняются, поэтому берём широкие подстроки, а не точные имена.
