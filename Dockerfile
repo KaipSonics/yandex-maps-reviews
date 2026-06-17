@@ -13,7 +13,8 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Стадия 2: бэкенд (Laravel) + готовая статика фронта ---
-FROM php:8.2-cli
+# PHP 8.4: composer.lock собран на PHP 8.5 и требует Symfony-пакеты для PHP >=8.4
+FROM php:8.4-cli
 
 # Системные зависимости и расширения PHP
 RUN apt-get update && apt-get install -y \
