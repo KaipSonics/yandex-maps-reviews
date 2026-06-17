@@ -258,9 +258,19 @@ async def _scroll_and_collect_reviews(page, review_selector: str) -> list[Review
         if no_new_count >= 3:
             break
 
-        # Прокручиваем последний отзыв в зону видимости — это триггерит подгрузку
-        if review_elements:
-            await review_elements[-1].scroll_into_view_if_needed()
+        # Прокручиваем последний отзыв в зону видимости ЧЕРЕЗ JS: элемент ищется
+        # заново в контексте страницы, поэтому нет «оторванных от DOM» ссылок,
+        # которые ломаются при перерисовке списка Яндексом.
+        try:
+            await page.evaluate(
+                """(sel) => {
+                    const els = document.querySelectorAll(sel);
+                    if (els.length) els[els.length - 1].scrollIntoView({block: 'end'});
+                }""",
+                review_selector,
+            )
+        except Exception:
+            pass  # прокрутка не критична — на следующей итерации попробуем снова
         await asyncio.sleep(1.2)
 
     return reviews
@@ -293,8 +303,11 @@ async def _extract_review(el) -> dict | None:
         except ValueError:
             rating = 0
     if not rating:
-        full_stars = await el.query_selector_all('[class*="_full"]')
-        rating = len(full_stars)
+        try:
+            full_stars = await el.query_selector_all('[class*="_full"]')
+            rating = len(full_stars)
+        except Exception:
+            rating = 0
 
     if not author and not text:
         return None  # пустой/служебный блок — пропускаем
