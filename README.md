@@ -6,6 +6,12 @@
 
 **Стек:** Laravel 13 (API) · Vue 3 + Composition API (SPA) · Python + Playwright (парсер) · SQLite/MySQL.
 
+## Демо
+
+- **Живой прототип:** https://yandex-maps-reviews-production.up.railway.app
+- **Вход:** `admin@example.com` / `password`
+- Вставьте ссылку на организацию в Яндекс.Картах (полную `…/maps/org/.../123456` или короткую «Поделиться» `…/maps/-/CODE`) → получите отзывы, рейтинг и счётчики.
+
 ---
 
 ## Архитектура
