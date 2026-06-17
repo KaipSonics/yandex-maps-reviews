@@ -18,7 +18,8 @@
       "Bash(curl -s -o /dev/null -w \"Docker Hub: %{http_code} за %{time_total}s\\\\n\" --max-time 15 https://registry-1.docker.io/v2/)",
       "Bash(curl -s -o /dev/null -w \"Brew: %{http_code} за %{time_total}s\\\\n\" --max-time 15 https://formulae.brew.sh/api/formula/php.json)",
       "Bash(curl -s -X POST http://localhost:8000/api/login -H \"Accept: application/json\" -d '{\"email\":\"admin@example.com\",\"password\":\"password\"}')",
-      "Bash(printf '\\\\nPARSER_URL=http://localhost:8001\\\\n')"
+      "Bash(printf '\\\\nPARSER_URL=http://localhost:8001\\\\n')",
+      "Bash(./venv/bin/python -c \"import ast; ast.parse\\(open\\('main.py'\\).read\\(\\)\\); print\\('Синтаксис OK'\\)\")"
     ]
   }
 }

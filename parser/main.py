@@ -127,23 +127,39 @@ async def scrape_yandex_maps(url: str) -> ParseResult:
         reviews_url = (base.group(1) if base else final_url.rstrip('/')) + '/reviews/'
         await page.goto(reviews_url, wait_until='domcontentloaded', timeout=30000)
 
-        # Ждём появления карточки организации
-        try:
-            await page.wait_for_selector('[class*="card-title"]', timeout=15000)
-        except PlaywrightTimeout:
+        # Ждём появления хотя бы одного блока отзыва. Пробуем несколько селекторов:
+        # классы Яндекса меняются, поэтому берём широкие подстроки, а не точные имена.
+        review_selectors = [
+            '[itemprop="review"]',                  # микроразметка schema.org (самое стабильное)
+            '[class*="business-review-view"]',      # BEM-блок отзыва
+            '[class*="review-view"]',
+        ]
+        review_selector = None
+        for sel in review_selectors:
+            try:
+                await page.wait_for_selector(sel, timeout=8000)
+                review_selector = sel
+                break
+            except PlaywrightTimeout:
+                continue
+
+        if review_selector is None:
             page_title = await page.title()
             raise ValueError(
-                f"Карточка отзывов не загрузилась за 15с. Заголовок страницы: «{page_title}». "
-                "Вероятно, капча/антибот или сменилась разметка Яндекса."
+                f"Не нашёл блоки отзывов на странице. Заголовок: «{page_title}». "
+                "Вероятно, сменилась разметка Яндекса или у организации нет отзывов."
             )
 
-        # Читаем название и статистику
-        org_name = await _get_text(page, '[class*="card-title__header"]')
-        avg_rating = await _get_rating(page)
-        ratings_count, reviews_count = await _get_counts(page)
+        # Название организации — из заголовка вкладки (самый надёжный источник)
+        org_name = await _get_org_name(page)
+
+        # Рейтинг и счётчики берём регулярками из текста страницы — устойчиво к смене классов
+        page_text = await page.inner_text('body')
+        avg_rating = _parse_rating(page_text)
+        ratings_count, reviews_count = _parse_counts(page_text)
 
         # Прокручиваем список отзывов до конца (загружаем все ~600)
-        reviews = await _scroll_and_collect_reviews(page)
+        reviews = await _scroll_and_collect_reviews(page, review_selector)
 
         await browser.close()
 
@@ -165,99 +181,122 @@ async def _get_text(page, selector: str, default: str = '') -> str:
         return default
 
 
-async def _get_rating(page) -> float:
-    """Читает средний рейтинг организации."""
-    text = await _get_text(page, '[class*="rating__value"]')
-    try:
-        return float(text.replace(',', '.'))
-    except (ValueError, AttributeError):
-        return 0.0
+async def _get_org_name(page) -> str:
+    """Название организации. Пробуем h1/заголовок, затем title вкладки."""
+    for sel in ['h1[class*="title"]', '[class*="card-title-view__title"]', 'h1']:
+        name = await _get_text(page, sel)
+        if name:
+            return name
+    # Фолбэк: из title вида «Отзывы о „Привет", Санкт-Петербург… — Яндекс Карты»
+    title = await page.title()
+    m = re.search(r'Отзывы о\s+[«"]?(.+?)[»"]?,', title)
+    return m.group(1) if m else title
 
 
-async def _get_counts(page) -> tuple[int, int]:
+def _parse_rating(text: str) -> float:
     """
-    Читает количество оценок и отзывов.
-    На странице они выглядят так: '1 234 оценки · 567 отзывов'
+    Средний рейтинг из текста страницы. Ищем число рядом со словом «оцен»,
+    напр. «4,5 · 1 234 оценки». Это устойчивее, чем привязка к CSS-классу.
     """
-    text = await _get_text(page, '[class*="rating__count"]', '0 оценок · 0 отзывов')
+    m = re.search(r'([1-5][.,]\d)\s*(?:·|\n|\s)*\s*[\d\s ]+\s*оцен', text)
+    if not m:
+        m = re.search(r'\b([1-5][.,]\d)\b', text)  # запасной вариант — первое «X,Y»
+    return float(m.group(1).replace(',', '.')) if m else 0.0
 
-    ratings = 0
-    reviews = 0
 
-    # Ищем числа перед словами "оценк" и "отзыв"
-    ratings_match = re.search(r'([\d\s]+)\s+оценк', text)
-    reviews_match = re.search(r'([\d\s]+)\s+отзыв', text)
+def _parse_counts(text: str) -> tuple[int, int]:
+    """Количество оценок и отзывов из текста: «… 1 234 оценки · 567 отзывов»."""
+    def num(pattern: str) -> int:
+        m = re.search(pattern, text)
+        return int(re.sub(r'[\s ]', '', m.group(1))) if m else 0
 
-    if ratings_match:
-        ratings = int(ratings_match.group(1).replace(' ', '').replace('\xa0', ''))
-    if reviews_match:
-        reviews = int(reviews_match.group(1).replace(' ', '').replace('\xa0', ''))
-
+    ratings = num(r'([\d\s ]+)\s*оцен')
+    reviews = num(r'([\d\s ]+)\s*отзыв')
     return ratings, reviews
 
 
-async def _scroll_and_collect_reviews(page) -> list[Review]:
+async def _scroll_and_collect_reviews(page, review_selector: str) -> list[Review]:
     """
     Прокручивает список отзывов и собирает все данные.
 
     Яндекс подгружает отзывы порциями (~20 штук) при скролле.
     Мы прокручиваем контейнер вниз, ждём новых отзывов, повторяем.
-    Останавливаемся когда новых отзывов больше не появляется.
+    Останавливаемся, когда новых отзывов больше не появляется (3 пустые попытки).
     """
-    reviews = []
-    seen_authors = set()  # для дедупликации
-    no_new_count = 0      # счётчик попыток без новых отзывов
+    reviews: list[Review] = []
+    seen = set()       # дедупликация по (автор, начало текста)
+    no_new_count = 0
 
-    # Контейнер со списком отзывов
-    reviews_container = '[class*="business-reviews-card-view"]'
-
-    for _ in range(40):  # максимум 40 прокруток = ~600-800 отзывов
-        # Собираем текущие отзывы на странице
-        review_elements = await page.query_selector_all('[class*="review"]')
+    for _ in range(50):  # максимум 50 прокруток (~600-1000 отзывов)
+        review_elements = await page.query_selector_all(review_selector)
 
         new_found = False
         for el in review_elements:
-            author = await _get_text(el, '[class*="user-icon__name"]')
-            if not author or author in seen_authors:
+            data = await _extract_review(el)
+            if not data:
                 continue
-
-            date = await _get_text(el, '[class*="review-header__date"]')
-            text = await _get_text(el, '[class*="review-text"]')
-            rating_el = await el.query_selector('[class*="stars__star_full"]')
-            rating = await _count_stars(el)
-
-            reviews.append(Review(
-                author=author,
-                date=date,
-                text=text,
-                rating=rating,
-            ))
-            seen_authors.add(author)
+            key = (data['author'], (data['text'] or '')[:40])
+            if key in seen:
+                continue
+            seen.add(key)
+            reviews.append(Review(**data))
             new_found = True
 
-        if not new_found:
-            no_new_count += 1
-            if no_new_count >= 3:
-                break  # три попытки без новых — значит все загружены
-        else:
-            no_new_count = 0
+        no_new_count = 0 if new_found else no_new_count + 1
+        if no_new_count >= 3:
+            break
 
-        # Скроллим контейнер вниз
-        await page.evaluate(
-            f"""
-            const el = document.querySelector('{reviews_container}');
-            if (el) el.scrollTop += 3000;
-            """
-        )
-        await asyncio.sleep(1.5)  # ждём подгрузки
+        # Прокручиваем последний отзыв в зону видимости — это триггерит подгрузку
+        if review_elements:
+            await review_elements[-1].scroll_into_view_if_needed()
+        await asyncio.sleep(1.2)
 
     return reviews
 
 
-async def _count_stars(review_el) -> int:
-    """Считает количество закрашенных звёзд в отзыве."""
-    stars = await review_el.query_selector_all('[class*="stars__star_full"]')
-    return len(stars)
+async def _extract_review(el) -> dict | None:
+    """Извлекает поля одного отзыва с фолбэками (микроразметка → BEM-классы)."""
+    # Автор
+    author = (await _get_text(el, '[itemprop="name"]')
+              or await _get_text(el, '[class*="author-name"]')
+              or await _get_text(el, '[class*="_author"]'))
+
+    # Текст отзыва
+    text = (await _get_text(el, '[itemprop="reviewBody"]')
+            or await _get_text(el, '[class*="__body"]')
+            or await _get_text(el, '[class*="review-text"]'))
+
+    # Дата: сначала микроразметка (атрибут content), потом видимый текст
+    date = await _get_attr(el, 'meta[itemprop="datePublished"]', 'content')
+    if not date:
+        date = (await _get_text(el, '[class*="__date"]')
+                or await _get_text(el, '[class*="date"]'))
+
+    # Оценка: микроразметка ratingValue, иначе считаем закрашенные звёзды
+    rating = 0
+    rating_meta = await _get_attr(el, 'meta[itemprop="ratingValue"]', 'content')
+    if rating_meta:
+        try:
+            rating = int(float(rating_meta))
+        except ValueError:
+            rating = 0
+    if not rating:
+        full_stars = await el.query_selector_all('[class*="_full"]')
+        rating = len(full_stars)
+
+    if not author and not text:
+        return None  # пустой/служебный блок — пропускаем
+
+    return {'author': author or 'Аноним', 'date': date or '', 'text': text or '', 'rating': rating}
+
+
+async def _get_attr(el, selector: str, attr: str) -> str:
+    """Безопасно читает атрибут вложенного элемента."""
+    try:
+        node = await el.query_selector(selector)
+        return (await node.get_attribute(attr)) or '' if node else ''
+    except Exception:
+        return ''
 
 
 @app.get("/health")
