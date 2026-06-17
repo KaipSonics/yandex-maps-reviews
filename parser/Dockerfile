@@ -12,5 +12,6 @@ RUN playwright install chromium
 
 COPY . .
 
-# Railway передаёт порт через $PORT; локально — 8001
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8001}"]
+# Слушаем на :: (IPv6) — приватная сеть Railway работает по IPv6.
+# Двойной стек на Linux принимает и IPv4-mapped, поэтому локально тоже ОК.
+CMD ["sh", "-c", "uvicorn main:app --host :: --port ${PORT:-8001}"]
