@@ -1,0 +1,19 @@
+# Laravel
+/backend/vendor/
+/backend/node_modules/
+/backend/.env
+/backend/storage/*.key
+/backend/database/*.sqlite
+/backend/.phpunit.result.cache
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+
+# Parser
+/parser/venv/
+/parser/__pycache__/
+__pycache__/
+
+# OS
+.DS_Store

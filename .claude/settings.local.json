@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker run *)",
+      "Bash(docker info *)",
+      "Bash(curl -I https://hub.docker.com)",
+      "Bash(brew --version)",
+      "Bash(brew install *)",
+      "Bash(php --version)",
+      "Bash(brew list *)",
+      "Bash(npm --version)",
+      "Bash(/opt/homebrew/bin/php --version)",
+      "Bash(/opt/homebrew/bin/node --version)",
+      "Bash(/usr/local/bin/php --version)",
+      "Bash(awk '{print $3, $11}')",
+      "Bash(ls /Users/kaipsonics/Library/Caches/Homebrew/*.incomplete 2>/dev/null | head -3; ls /Users/kaipsonics/Library/Caches/Homebrew/*.tar.gz 2>/dev/null | head -3)",
+      "Bash(awk '{for\\(i=11;i<=NF;i++\\) printf \"%s \", $i; print \"\"}')",
+      "Bash(curl -s -o /dev/null -w \"Docker Hub: %{http_code} за %{time_total}s\\\\n\" --max-time 15 https://registry-1.docker.io/v2/)",
+      "Bash(curl -s -o /dev/null -w \"Brew: %{http_code} за %{time_total}s\\\\n\" --max-time 15 https://formulae.brew.sh/api/formula/php.json)",
+      "Bash(curl -s -X POST http://localhost:8000/api/login -H \"Accept: application/json\" -d '{\"email\":\"admin@example.com\",\"password\":\"password\"}')",
+      "Bash(printf '\\\\nPARSER_URL=http://localhost:8001\\\\n')"
+    ]
+  }
+}
