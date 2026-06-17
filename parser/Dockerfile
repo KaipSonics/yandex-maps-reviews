@@ -17,4 +17,5 @@ RUN playwright install-deps chromium
 
 COPY . .
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Railway передаёт порт через $PORT; локально — 8001
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8001}"]
