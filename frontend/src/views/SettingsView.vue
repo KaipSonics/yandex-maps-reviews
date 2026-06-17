@@ -126,7 +126,10 @@ async function handleSave() {
     org.value = data.organization
     await loadReviews(1)
   } catch (e) {
-    saveError.value = e.response?.data?.message ?? 'Ошибка при загрузке данных'
+    // Показываем и общее сообщение, и детальную причину от парсера (капча/разметка/таймаут)
+    const data = e.response?.data
+    saveError.value = [data?.message, data?.error].filter(Boolean).join(' — ')
+      || 'Ошибка при загрузке данных'
   } finally {
     saving.value = false
   }

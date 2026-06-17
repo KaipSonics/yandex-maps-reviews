@@ -40,17 +40,15 @@ class ParseResult(BaseModel):
     reviews: list[Review]
 
 
-def extract_org_id(url: str) -> str:
+def extract_org_id(url: str) -> str | None:
     """
-    Извлекает ID организации из URL Яндекс.Карт.
-    Примеры URL:
-      https://yandex.ru/maps/org/mcdonalds/12345678/reviews/
-      https://yandex.ru/maps/-/some-slug
+    Пытается извлечь ID организации из полного URL вида
+    https://yandex.ru/maps/org/mcdonalds/12345678/...
+    Для короткой ссылки (/maps/-/CODE) вернёт None — ID определим
+    уже после перехода по редиректу, из итогового адреса страницы.
     """
     match = re.search(r'/org/[^/]+/(\d+)', url)
-    if match:
-        return match.group(1)
-    raise ValueError(f"Не удалось извлечь ID организации из URL: {url}")
+    return match.group(1) if match else None
 
 
 @app.post("/parse", response_model=ParseResult)
@@ -100,15 +98,44 @@ async def scrape_yandex_maps(url: str) -> ParseResult:
 
         page = await context.new_page()
 
-        # Переходим сразу на вкладку отзывов
-        reviews_url = url.rstrip('/') + '/reviews/'
-        await page.goto(reviews_url, wait_until='networkidle', timeout=30000)
+        # Шаг 1. Переходим по исходной ссылке (полной ИЛИ короткой «Поделиться»).
+        # Короткая сама редиректит на полный /org/.../id — поэтому сначала открываем как есть.
+        await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+        await asyncio.sleep(2)  # даём отработать редиректу короткой ссылки
+
+        final_url = page.url
+
+        # Детект антибота: Яндекс с IP дата-центра часто отдаёт капчу
+        if 'showcaptcha' in final_url or 'captcha' in final_url.lower():
+            raise ValueError(
+                "Яндекс показал капчу (защита от ботов). Скорее всего заблокирован IP "
+                "сервера-дата-центра. Нужен резидентный прокси или запуск парсера с другого IP."
+            )
+
+        # Шаг 2. Из итогового адреса достаём ID и идём на вкладку отзывов
+        org_id = extract_org_id(final_url)
+        if not org_id:
+            # Не нашли /org/.../id — значит это не карточка организации
+            page_title = await page.title()
+            raise ValueError(
+                f"Не удалось определить организацию по ссылке. Итоговый адрес: {final_url}. "
+                f"Заголовок страницы: «{page_title}». Возможно, капча или неверная ссылка."
+            )
+
+        # Базовый адрес карточки + вкладка отзывов
+        base = re.match(r'(https?://[^/]+/maps/org/[^/]+/\d+)', final_url)
+        reviews_url = (base.group(1) if base else final_url.rstrip('/')) + '/reviews/'
+        await page.goto(reviews_url, wait_until='domcontentloaded', timeout=30000)
 
         # Ждём появления карточки организации
         try:
             await page.wait_for_selector('[class*="card-title"]', timeout=15000)
         except PlaywrightTimeout:
-            raise ValueError("Страница не загрузилась — возможно, неверный URL или организация не найдена")
+            page_title = await page.title()
+            raise ValueError(
+                f"Карточка отзывов не загрузилась за 15с. Заголовок страницы: «{page_title}». "
+                "Вероятно, капча/антибот или сменилась разметка Яндекса."
+            )
 
         # Читаем название и статистику
         org_name = await _get_text(page, '[class*="card-title__header"]')

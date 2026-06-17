@@ -24,8 +24,10 @@ class StoreOrganizationRequest extends FormRequest
             'url' => [
                 'required',
                 'url',
-                // Ссылка должна быть именно на организацию Яндекс.Карт вида /org/.../12345
-                'regex:#^https?://yandex\.[a-z]+/maps/org/[^/]+/\d+#',
+                // Принимаем две формы ссылки Яндекс.Карт:
+                //   полную:    /maps/org/название/12345
+                //   короткую:  /maps/-/CODE  (кнопка «Поделиться»)
+                'regex:#^https?://yandex\.[a-z]+/maps/(org/[^/]+/\d+|-/[A-Za-z0-9]+)#',
             ],
         ];
     }
