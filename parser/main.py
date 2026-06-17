@@ -144,10 +144,22 @@ async def scrape_yandex_maps(url: str) -> ParseResult:
                 continue
 
         if review_selector is None:
+            # Диагностика: считаем, сколько элементов даёт каждый селектор-кандидат,
+            # чтобы понять реальную разметку Яндекса (парсим вслепую).
+            probes = [
+                '[itemprop="review"]', '[itemscope]', '[class*="review"]',
+                '[class*="business-review"]', '[class*="review-view"]', 'article',
+            ]
+            counts = {}
+            for sel in probes:
+                try:
+                    counts[sel] = len(await page.query_selector_all(sel))
+                except Exception:
+                    counts[sel] = -1
             page_title = await page.title()
+            diag = ', '.join(f'{s}={c}' for s, c in counts.items())
             raise ValueError(
-                f"Не нашёл блоки отзывов на странице. Заголовок: «{page_title}». "
-                "Вероятно, сменилась разметка Яндекса или у организации нет отзывов."
+                f"Не нашёл блоки отзывов. Заголовок: «{page_title}». Диагностика селекторов: {diag}"
             )
 
         # Название организации — из заголовка вкладки (самый надёжный источник)
